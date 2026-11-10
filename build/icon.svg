@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Prompt Lab — portrait in a prompt</title>
+  <defs>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#dca368"/><stop offset=".48" stop-color="#b8653b"/><stop offset="1" stop-color="#7b3828"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2=".8" y2="1">
+      <stop stop-color="#fffdf2" stop-opacity=".98"/><stop offset="1" stop-color="#ffe5c3" stop-opacity=".8"/>
+    </linearGradient>
+    <linearGradient id="portrait" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#c77d47"/><stop offset="1" stop-color="#87402c"/>
+    </linearGradient>
+    <radialGradient id="light" cx=".15" cy=".08" r=".9">
+      <stop stop-color="#ffe7b4" stop-opacity=".45"/><stop offset="1" stop-color="#ffe7b4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="4" y="4" width="504" height="504" rx="112" fill="url(#warm)"/>
+  <rect x="4" y="4" width="504" height="504" rx="112" fill="url(#light)"/>
+  <rect x="9" y="9" width="494" height="494" rx="108" fill="none" stroke="#ffe8c3" stroke-opacity=".35" stroke-width="3"/>
+  <!-- A prompt bubble, not the legacy converter's overlapping picture sheets. -->
+  <path d="M138 105H374Q416 105 416 147V329Q416 371 374 371H236L162 420V371H138Q96 371 96 329V147Q96 105 138 105Z" fill="#582a20" opacity=".16" transform="translate(0 12)"/>
+  <path d="M138 105H374Q416 105 416 147V329Q416 371 374 371H236L162 420V371H138Q96 371 96 329V147Q96 105 138 105Z" fill="url(#glass)" stroke="#fff8e8" stroke-width="6"/>
+  <circle cx="246" cy="203" r="47" fill="url(#portrait)"/>
+  <path d="M164 326V313C164 271 198 257 246 257S328 271 328 313V326Z" fill="url(#portrait)"/>
+  <!-- Editing caret connects the portrait to the prompt editor. -->
+  <path d="M356 176V309" stroke="#a14c2c" stroke-width="14" stroke-linecap="round"/>
+</svg>

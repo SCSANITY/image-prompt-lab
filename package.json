@@ -1,0 +1,34 @@
+{
+  "name": "ymi-prompt-lab",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local image prompt experiments, versioned prompt library and visual comparisons",
+  "author": "YMI",
+  "license": "MIT",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --configLoader native\" \"wait-on tcp:5178 && electron .\"",
+    "build": "vite build --configLoader native",
+    "test": "node --require ./tests/network-guard.cjs --test tests/*.test.cjs",
+    "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-visual-smoke.ps1",
+    "dist": "npm run build && electron-builder --config electron-builder.yml --win portable",
+    "dist:dir": "npm run build && electron-builder --config electron-builder.yml --win dir"
+  },
+  "dependencies": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "sharp": "0.35.5"
+  },
+  "overrides": {
+    "minimatch@>=7 <11.0.1": "11.0.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "5.1.0",
+    "concurrently": "9.2.5",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
+    "png-to-ico": "3.0.2",
+    "vite": "7.3.8",
+    "wait-on": "8.0.5"
+  }
+}

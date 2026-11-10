@@ -1,0 +1,123 @@
+'use strict'
+const { app, BrowserWindow, ipcMain, session } = require('electron')
+const assert = require('node:assert/strict')
+const fs = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
+const sharp = require('sharp')
+const { publicCapabilities } = require('../core/contract.cjs')
+const { inspectImage, prepareRequest, publicRequest } = require('../core/runner.cjs')
+const { createPreviewDataUrl } = require('../electron/promptLabHandlers.cjs')
+const { createWorkspaceStore } = require('../electron/workspaceStore.cjs')
+app.enableSandbox()
+app.on('window-all-closed', () => {})
+globalThis.fetch = () => { throw new Error('Smoke forbids paid requests') }
+async function main() {
+  process.stdout.write('smoke: starting\n')
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'prompt-lab-ui-'))
+  app.setPath('userData', path.join(root, 'profile'))
+  await app.whenReady()
+  process.stdout.write('smoke: electron ready\n')
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: /^https?:/.test(details.url) && !details.url.startsWith('http://127.0.0.1:5178/') }))
+  const fixture = path.join(root, 'illustration.png')
+  await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"><rect width="1024" height="1024" fill="#e4d6bb"/><circle cx="720" cy="210" r="96" fill="#eab65c"/><path d="M0 800L360 380L600 680L800 490L1024 800V1024H0Z" fill="#73856d"/><path d="M0 930L600 780L1024 930V1024H0Z" fill="#385b4b"/></svg>')).png().toFile(fixture)
+  const image = await inspectImage(fixture)
+  const facePath = path.join(root, 'face-reference.png')
+  await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="320"><rect width="256" height="320" fill="#ead6c8"/><ellipse cx="128" cy="315" rx="100" ry="100" fill="#af6b50"/><ellipse cx="128" cy="135" rx="71" ry="90" fill="#603c2d"/><ellipse cx="128" cy="153" rx="61" ry="76" fill="#f0bd96"/><path d="M68 116Q85 20 185 112Q132 90 109 77Z" fill="#603c2d"/><circle cx="105" cy="147" r="5" fill="#493126"/><circle cx="151" cy="147" r="5" fill="#493126"/><path d="M109 182Q128 202 147 182" fill="none" stroke="#a35a43" stroke-width="5"/></svg>')).png().toFile(facePath)
+  const face = await inspectImage(facePath)
+  let lastValidated
+  const preview = await createPreviewDataUrl(image.bytes)
+  const store = createWorkspaceStore(path.join(root, 'workspace'))
+  await store.savePrompt({ title: 'Preserve the illustration', body: 'Replace only the face using reference 1. Preserve pose, background and lettering.', notes: 'Check face identity and unchanged composition.', tags: ['identity', 'baseline'] })
+  const caps = publicCapabilities()
+  const history = ['Baseline · frontal portrait', 'Revision · protect typography'].map((name, i) => ({ runId: `fixture_${i}`, experimentName: name, prompt: i ? 'Preserve face identity, composition and all lettering.' : 'Replace the face. Keep the illustration.', settings: { ...caps.defaults, quality: i ? 'high' : 'medium' }, model: caps.defaults.model, size: '1024x1024', quality: i ? 'high' : 'medium', result: 'success', completedAt: '2026-11-10T08:00:00Z', providerTimingMs: 32100, calculatedChargeUsd: .12, providerRequestId: 'fixture_request', transportCalls: 1, folderAvailable: true, inputs: [{ path: fixture, sha256: image.sha256, name: 'illustration.png' }], outputs: [{ file: 'output-01.png', width: 1024, height: 1024, byte_count: image.byte_count, previewUrl: preview }] }))
+  history.forEach(run => run.inputs.push({ path: facePath, sha256: face.sha256, name: 'face-reference.png' }))
+  const handlers = {
+    boot: () => ({ capabilities: caps, apiKeyLoaded: false, defaultOutputRoot: path.join(root, 'images') }),
+    workspace: () => store.read(), 'save-prompt': v => store.savePrompt(v), 'update-prompt': v => store.updatePrompt(v), 'save-case': v => store.saveCase(v), 'save-review': v => store.saveReview(v),
+    'pick-images': role => [role === 'target' ? facePath : fixture], 'list-history': () => history,
+    'view-original': () => ({ url: `data:image/png;base64,${image.bytes.toString('base64')}`, width: 1024, height: 1024 }),
+    'view-input': () => ({ url: `data:image/png;base64,${image.bytes.toString('base64')}`, width: 1024, height: 1024 }),
+    'inspect-image': async p => { const v = await inspectImage(p); return { ok: true, image: { ...v, bytes: undefined, previewUrl: await createPreviewDataUrl(v.bytes) } } },
+    validate: async v => { try { lastValidated=v; await new Promise(r => setTimeout(r, 500)); return { ok: true, request: publicRequest(await prepareRequest(v)) } } catch(e) { return { ok: false, error: { message: e.message } } } },
+    execute: () => { throw new Error('Smoke must never execute a paid request') },
+  }
+  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`prompt-lab:${name}`, (_e, v) => handler(v))
+  const win = new BrowserWindow({ width: 1500, height: 960, show: true, webPreferences: { preload: path.join(__dirname, '../electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } })
+  const errors = []; win.webContents.on('console-message', d => { if (d.level === 'error') errors.push(d.message) })
+  const js = s => win.webContents.executeJavaScript(s)
+  const pause = () => new Promise(r => setTimeout(r, 120))
+  const click = async label => { process.stdout.write('click '+label+'\\n'); await js(`(()=>{const root=document.querySelector('dialog[open]')||document;const b=Array.from(root.querySelectorAll('button')).find(b=>b.textContent.trim()===${JSON.stringify(label)});if(!b)throw Error('Button missing: '+${JSON.stringify(label)});b.click()})()`); await pause() }
+  const clickLabel = async label => { await js(`document.querySelector('button[aria-label="${label}"]').click()`); await pause() }
+  const input = async (selector, value) => { await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))})()`); await pause() }
+  const capture = async filename => { win.showInactive(); await pause(); const file = path.join(os.tmpdir(), filename); await fs.writeFile(file, (await win.webContents.capturePage()).toPNG()); return file }
+  try {
+    process.stdout.write('smoke: loading UI\n')
+    await win.loadURL('http://127.0.0.1:5178/'); process.stdout.write('smoke: navigation done\\n'); await new Promise(r => setTimeout(r, 600))
+    await js(`window.confirm=()=>true; true`)
+    process.stdout.write('smoke: UI loaded\n')
+    assert.equal(await js(`document.querySelectorAll('nav button').length`), 3)
+    assert.equal(await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Generate image').disabled`), true)
+    assert.equal(await js(`document.querySelector('.vite-error-overlay')===null`), true)
+    await clickLabel('Upload Target image')
+    assert.equal(await js(`document.querySelectorAll('.input-slot.filled').length`), 1)
+    assert.ok(await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Validate').disabled`))
+    assert.equal(await js(`document.querySelectorAll('.input-slot')[1].querySelector('img').alt`), 'Target image: face-reference.png')
+    await clickLabel('Upload Source image')
+    assert.equal(await js(`document.querySelectorAll('.input-slot.filled').length`), 2)
+    await clickLabel('Remove Source image')
+    assert.equal(await js(`document.querySelectorAll('.input-slot')[0].querySelector('img')`), null)
+    assert.ok(await js(`document.querySelectorAll('.input-slot')[1].querySelector('img').naturalWidth > 0`))
+    assert.ok(await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Validate').disabled`))
+    await clickLabel('Upload Source image')
+    await input('textarea[aria-label="Experiment prompt"]', 'Keep all the illustration details and replace the face only.')
+    await click('Validate'); await new Promise(r => setTimeout(r, 700)); assert.ok(await js(`document.body.innerText.includes('Local checks passed')`))
+    assert.deepEqual(lastValidated.imagePaths, [fixture, facePath])
+    assert.deepEqual(lastValidated.expectedInputHashes, [image.sha256, face.sha256])
+    assert.equal(lastValidated.prompt, 'Keep all the illustration details and replace the face only.')
+    await click('Save case'); await click('Save case'); assert.equal((await store.read()).cases.length, 1)
+    await click('Open case'); await click('Load case'); assert.ok(await js(`document.body.innerText.includes('source hashes verified')`))
+    await click('Prompt library'); await click('＋ New prompt')
+    await input('.library-editor input', 'Profile identity test')
+    await input('.library-body', 'Preserve the side profile and background.')
+    await click('Save new version'); assert.equal((await store.read()).prompts.length, 2)
+    await input('.library-body', 'Preserve the side profile, background and text.')
+    await click('Save new version'); assert.equal((await store.read()).prompts[0].versions.length, 2)
+    await click('☆ Favorite'); assert.equal((await store.read()).prompts[0].favorite, true)
+    await click('Move to trash'); assert.ok((await store.read()).prompts[0].deletedAt)
+    await click('Trash'); await js(`document.querySelector('.library-list .list-card').click()`); await pause(); await click('Restore'); assert.equal((await store.read()).prompts[0].deletedAt, null)
+    await click('All'); await js(`document.querySelector('.library-list .list-card').click()`); await pause()
+    const libraryShot = await capture('prompt-lab-library-v2.png')
+    await click('Experiments'); await js(`document.querySelector('.history-image').click()`); await pause()
+    const layouts = []
+    for (const [width, height] of [[1500, 960], [1120, 720], [1000, 720]]) {
+      win.setSize(width, height); await pause()
+      const layout = await js(`(()=>{const rect=s=>{const r=document.querySelector(s).getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height}};return {height:innerHeight,width:innerWidth,canvas:rect('.result-stage'),composer:rect('.composer'),inspector:rect('.inspector'),generate:rect('.composer-bottom'),scrollWidth:document.body.scrollWidth}})()`)
+      assert.ok(layout.canvas.height >= 120)
+      assert.ok(layout.canvas.bottom <= layout.composer.top)
+      assert.ok(layout.generate.bottom <= layout.height)
+      assert.ok(layout.inspector.bottom <= layout.height)
+      assert.ok(layout.scrollWidth <= layout.width)
+      layouts.push(layout)
+    }
+    win.setSize(1500, 960); await pause()
+    await click('View original'); assert.equal(await js(`document.querySelector('.image-viewer').open`), true)
+    await click('100%'); assert.equal(await js(`document.querySelector('.image-viewer img').getBoundingClientRect().width`), 1024); await click('Close')
+    await click('Compare source'); assert.equal(await js(`document.querySelector('.compare-dialog').open`), true); await click('Side by side'); await click('Close')
+    await input('.inspector textarea', 'fixture review')
+    await click('Save assessment'); assert.equal((await store.read()).reviews.fixture_0.notes, 'fixture review')
+    await click('Full run details'); assert.ok(await js(`document.querySelector('dialog').textContent.includes('fixture_request')`)); await js(`document.querySelector('dialog header button').click()`); await pause()
+    await click('Use as next experiment'); assert.equal(await js(`document.querySelector('textarea[aria-label="Experiment prompt"]').value`), history[0].prompt)
+    await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('⚙')).click()`); await pause()
+    assert.equal(await js(`document.querySelectorAll('datalist option').length`), 5)
+    await js(`document.querySelector('dialog details').open=true`); assert.ok(await js(`document.querySelector('dialog').textContent.includes('Input fidelity')`)); await js(`document.querySelector('dialog header button').click()`); await pause()
+    const studioShot = await capture('prompt-lab-workspace-v2.png')
+    await click('Experiments'); const historyShot = await capture('prompt-lab-experiments-v2.png')
+    await js(`document.querySelectorAll('.history-card input[type=checkbox]').forEach(e=>e.click())`); await pause(); await click('Compare 2/2'); assert.equal(await js(`document.querySelectorAll('.compare-pane').length`), 2)
+    const compareShot = await capture('prompt-lab-compare-v2.png'); await click('Close')
+    await click('Connect API'); assert.equal(await js(`document.querySelector('dialog input').type`), 'password')
+    assert.deepEqual(errors, [])
+    process.stdout.write(JSON.stringify({ result: 'pass', screenshots: [studioShot, libraryShot, historyShot, compareShot], layouts, consoleErrors: errors.length, paidRequests: 0 }, null, 2))
+  } finally { win.destroy() }
+}
+main().then(() => app.quit()).catch(e => { process.stderr.write(e.stack); app.exit(1) })

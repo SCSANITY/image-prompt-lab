@@ -1,0 +1,24 @@
+appId: com.ymi.prompt-lab.standalone
+productName: YMI Prompt Lab
+artifactName: YMI-Prompt-Lab-${version}-portable.${ext}
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - electron/**/*
+  - core/**/*
+  - build/icon.ico
+  - build/icon.png
+  - package.json
+asar: true
+asarUnpack:
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
+win:
+  icon: build/icon.ico
+  signAndEditExecutable: true
+  signExecutable: false
+  target:
+    - target: portable
+      arch: [x64]
