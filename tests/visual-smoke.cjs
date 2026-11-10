@@ -32,17 +32,26 @@ async function main() {
   const caps = publicCapabilities()
   const history = ['Baseline · frontal portrait', 'Revision · protect typography'].map((name, i) => ({ runId: `fixture_${i}`, experimentName: name, prompt: i ? 'Preserve face identity, composition and all lettering.' : 'Replace the face. Keep the illustration.', settings: { ...caps.defaults, quality: i ? 'high' : 'medium' }, model: caps.defaults.model, size: '1024x1024', quality: i ? 'high' : 'medium', result: 'success', completedAt: '2026-11-10T08:00:00Z', providerTimingMs: 32100, calculatedChargeUsd: .12, providerRequestId: 'fixture_request', transportCalls: 1, folderAvailable: true, inputs: [{ path: fixture, sha256: image.sha256, name: 'illustration.png' }], outputs: [{ file: 'output-01.png', width: 1024, height: 1024, byte_count: image.byte_count, previewUrl: preview }] }))
   history.forEach(run => run.inputs.push({ path: facePath, sha256: face.sha256, name: 'face-reference.png' }))
+  let savedCopies = 0, deletedChoice = null, storageMoved = false
+  const defaultOutput = () => path.join(root, storageMoved ? 'new-drive/images' : 'images')
+  const storage = () => ({ evidenceRoot: path.join(root, storageMoved ? 'new-drive/records' : 'profile/records'), outputRoot: defaultOutput(), profileRoot: path.join(root, 'profile'), runCount: history.length, imageCount: history.length, recordBytes: 1024, imageBytes: image.byte_count * history.length })
   const handlers = {
-    boot: () => ({ capabilities: caps, apiKeyLoaded: false, defaultOutputRoot: path.join(root, 'images') }),
+    boot: () => ({ capabilities: caps, apiKeyLoaded: false, defaultOutputRoot: defaultOutput(), storageVersion: storage().evidenceRoot, managedStorage: storageMoved }),
     workspace: () => store.read(), 'save-prompt': v => store.savePrompt(v), 'update-prompt': v => store.updatePrompt(v), 'save-case': v => store.saveCase(v), 'save-review': v => store.saveReview(v),
     'pick-images': role => [role === 'target' ? facePath : fixture], 'list-history': () => history,
     'view-original': () => ({ url: `data:image/png;base64,${image.bytes.toString('base64')}`, width: 1024, height: 1024 }),
     'view-input': () => ({ url: `data:image/png;base64,${image.bytes.toString('base64')}`, width: 1024, height: 1024 }),
+    'save-output': () => { savedCopies++; return { saved: true } },
+    'storage-status': storage,
+    'pick-storage': () => ({ token: 'move-fixture', destination: path.join(root, 'new-drive'), ...storage() }),
+    'migrate-storage': () => { storageMoved = true; return { ...storage(), removedBytes: 1024, retainedFiles: 0 } },
+    'plan-delete-run': id => ({ token: id, title: history.find(r => r.runId === id).experimentName, recordBytes: 512, imageBytes: image.byte_count, reclaimableImageBytes: image.byte_count, imageCount: 1, protectedImages: 0 }),
+    'delete-run': (id, withImages) => { deletedChoice = { id, withImages }; history.splice(history.findIndex(r => r.runId === id), 1); return { deleted: true, runId: id, removedBytes: 512 + (withImages ? image.byte_count : 0), retainedFiles: 0 } },
     'inspect-image': async p => { const v = await inspectImage(p); return { ok: true, image: { ...v, bytes: undefined, previewUrl: await createPreviewDataUrl(v.bytes) } } },
     validate: async v => { try { lastValidated=v; await new Promise(r => setTimeout(r, 500)); return { ok: true, request: publicRequest(await prepareRequest(v)) } } catch(e) { return { ok: false, error: { message: e.message } } } },
     execute: () => { throw new Error('Smoke must never execute a paid request') },
   }
-  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`prompt-lab:${name}`, (_e, v) => handler(v))
+  for (const [name, handler] of Object.entries(handlers)) ipcMain.handle(`prompt-lab:${name}`, (_e, ...args) => handler(...args))
   const win = new BrowserWindow({ width: 1500, height: 960, show: true, webPreferences: { preload: path.join(__dirname, '../electron/preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } })
   const errors = []; win.webContents.on('console-message', d => { if (d.level === 'error') errors.push(d.message) })
   const js = s => win.webContents.executeJavaScript(s)
@@ -89,6 +98,23 @@ async function main() {
     await click('All'); await js(`document.querySelector('.library-list .list-card').click()`); await pause()
     const libraryShot = await capture('prompt-lab-library-v2.png')
     await click('Experiments'); await js(`document.querySelector('.history-image').click()`); await pause()
+    assert.ok(await js(`Boolean(document.querySelector('.experiment-detail'))`))
+    assert.equal(await js(`document.querySelector('nav [aria-current="page"]').textContent`), 'Experiments')
+    assert.ok(await js(`document.querySelector('.experiment-detail').textContent.includes('32.10 s')`))
+    assert.ok(await js(`document.querySelector('.experiment-detail').textContent.includes('$0.1200')`))
+    await click('Save image as…'); assert.equal(savedCopies, 1)
+    const detailShot = await capture('prompt-lab-experiment-detail.png')
+    win.setSize(1000, 720); await pause()
+    const detailLayout = await js(`(()=>{const d=document.querySelector('dialog'); const r=d.getBoundingClientRect(); const stage=document.querySelector('.detail-image-stage').getBoundingClientRect(); return {left:r.left,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,overflow:d.scrollWidth>d.clientWidth,stageWidth:stage.width,stageHeight:stage.height}})()`)
+    assert.ok(detailLayout.left >= 0 && detailLayout.right <= detailLayout.width && detailLayout.bottom <= detailLayout.height)
+    assert.equal(detailLayout.overflow, false)
+    assert.ok(detailLayout.stageWidth > 300 && detailLayout.stageHeight > 200)
+    await capture('prompt-lab-experiment-detail-1000.png')
+    win.setSize(1500, 960); await pause()
+    await clickLabel('Close dialog')
+    await click('Workspace')
+    assert.equal(await js(`document.querySelector('textarea[aria-label="Experiment prompt"]').value`), 'Keep all the illustration details and replace the face only.')
+    await click('Experiments'); await click('Inspect'); await click('Use as next experiment')
     const layouts = []
     for (const [width, height] of [[1500, 960], [1120, 720], [1000, 720]]) {
       win.setSize(width, height); await pause()
@@ -115,9 +141,22 @@ async function main() {
     await click('Experiments'); const historyShot = await capture('prompt-lab-experiments-v2.png')
     await js(`document.querySelectorAll('.history-card input[type=checkbox]').forEach(e=>e.click())`); await pause(); await click('Compare 2/2'); assert.equal(await js(`document.querySelectorAll('.compare-pane').length`), 2)
     const compareShot = await capture('prompt-lab-compare-v2.png'); await click('Close')
+    await click('Data & storage'); assert.ok(await js(`document.querySelector('dialog').textContent.includes('Small app profile')`))
+    await click('Choose data folder…'); assert.ok(await js(`Boolean(document.querySelector('.migration-preview'))`))
+    const storageShot = await capture('prompt-lab-storage.png')
+    await click('Move verified data'); assert.equal(storageMoved, true); await clickLabel('Close dialog')
+    await click('Workspace'); await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('⚙')).click()`); await pause()
+    assert.ok(await js(`Array.from(document.querySelectorAll('dialog input')).some(e=>e.value.includes('new-drive'))`)); await clickLabel('Close dialog')
+    await click('Experiments'); await click('Delete…'); assert.equal(await js(`document.querySelector('input[name="delete-mode"]').checked`), true)
+    await click('Cancel'); assert.equal(history.length, 2)
+    await click('Delete…'); await js(`document.querySelectorAll('input[name="delete-mode"]')[1].click()`); await pause()
+    const deleteShot = await capture('prompt-lab-delete.png')
+    assert.ok(await js(`document.querySelector('.storage-options input').getBoundingClientRect().width < 25`))
+    await click('Delete selected data'); assert.equal(deletedChoice.withImages, true); assert.equal(history.length, 1)
+    await click('Delete…'); await click('Delete selected data'); assert.equal(deletedChoice.withImages, false); assert.equal(history.length, 0)
     await click('Connect API'); assert.equal(await js(`document.querySelector('dialog input').type`), 'password')
     assert.deepEqual(errors, [])
-    process.stdout.write(JSON.stringify({ result: 'pass', screenshots: [studioShot, libraryShot, historyShot, compareShot], layouts, consoleErrors: errors.length, paidRequests: 0 }, null, 2))
+    process.stdout.write(JSON.stringify({ result: 'pass', screenshots: [studioShot, libraryShot, historyShot, compareShot, detailShot, storageShot, deleteShot], layouts, consoleErrors: errors.length, paidRequests: 0 }, null, 2))
   } finally { win.destroy() }
 }
 main().then(() => app.quit()).catch(e => { process.stderr.write(e.stack); app.exit(1) })

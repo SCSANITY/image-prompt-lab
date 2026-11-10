@@ -28,7 +28,7 @@ function createRunRegistry() {
     return directories.get(normalizedRunId)
   }
 
-  return { register, resolve }
+  return { register, resolve, clear: () => directories.clear(), remove: runId => directories.delete(runId) }
 }
 
 module.exports = { createRunRegistry }

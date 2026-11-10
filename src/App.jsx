@@ -3,6 +3,8 @@ import ImageViewer from "./ImageViewer";
 import Compare from "./Compare";
 import InputSlots from "./InputSlots";
 import appIcon from "../build/icon.svg";
+import ExperimentDetails, { bytes } from "./ExperimentDetails";
+import StorageDialog, { DeleteExperiment } from "./StorageDialogs";
 const api = window.promptLab;
 const FeedbackContext = React.createContext(null);
 const phases = {
@@ -76,6 +78,9 @@ function Empty({ title, children }) {
   );
 }
 export default function App() {
+  const [detailRun, setDetailRun] = useState(null);
+  const [deletePlan, setDeletePlan] = useState(null);
+  const [maintenance, setMaintenance] = useState(false);
   const [expandedComposer, setExpandedComposer] = useState(false);
   const [boot, setBoot] = useState(null),
     [settings, setSettings] = useState(null),
@@ -146,7 +151,8 @@ export default function App() {
       });
       setPrompt(saved?.prompt || "");
       setName(saved?.name || "Untitled experiment");
-      setOutputRoot(saved?.outputRoot || b.defaultOutputRoot);
+      const sameStorage = saved?.storageVersion === b.storageVersion || (!saved?.storageVersion && !b.managedStorage);
+      setOutputRoot((sameStorage && saved?.outputRoot) || b.defaultOutputRoot);
       setWorkspace(await api.workspace());
       await refresh();
     });
@@ -163,6 +169,7 @@ export default function App() {
             prompt,
             name,
             outputRoot,
+            storageVersion: boot?.storageVersion,
           }),
         );
       } catch {
@@ -170,7 +177,7 @@ export default function App() {
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [settings, prompt, name, outputRoot]);
+  }, [settings, prompt, name, outputRoot, boot?.storageVersion]);
   useEffect(() => {
     setValidated(false);
   }, [settings, prompt, images, mask]);
@@ -288,6 +295,7 @@ export default function App() {
     setNotice("Prompt loaded. Input files and destination are unchanged.");
   };
   const execute = async (dry) => {
+    if (maintenance) return;
     if (!inputsReady) {
       setError("Add both Source image (image1) and Target image (image2).");
       return;
@@ -417,6 +425,36 @@ export default function App() {
         slider,
       });
     });
+  const reuseRun = (savedRun) => act(async () => {
+    if (prompt && !window.confirm("Replace the next experiment with this saved run?")) return;
+    if (savedRun.inputs?.length) await loadInputs(savedRun.inputs, savedRun.mask);
+    setPrompt(savedRun.prompt);
+    setSettings({ ...boot.capabilities.defaults, ...savedRun.settings });
+    setName(`${savedRun.experimentName} · next`);
+    setExperimentContext({ caseId: savedRun.caseId || "", promptId: savedRun.promptId || "", versionId: savedRun.versionId || "" });
+    setRun(savedRun); setOutputIndex(0); setDetailRun(null); navigate("studio");
+    setNotice(savedRun.inputs?.length ? "Saved input hashes verified. Experiment loaded." : "Legacy record has no source references. Current images are unchanged; verify them before sending.");
+  });
+  const reviewDeletion = (savedRun) => act(async () => {
+    const plan = await api.planDeleteRun(savedRun.runId);
+    setDetailRun(null); setDeletePlan(plan);
+  });
+  const deleted = async (result) => {
+    setDeletePlan(null);
+    if (result.deleted) {
+      setRun(current => current?.runId === result.runId ? null : current);
+      setCompareIds(ids => ids.filter(id => id !== result.runId));
+      setWorkspace(await api.workspace());
+    }
+    await refresh();
+    setNotice(`${result.deleted ? "Experiment deleted." : "Deletion could not finish."} Released ${bytes(result.removedBytes)}.${result.protectedImages ? ` ${result.protectedImages} protected or unverified image(s) kept.` : ""} ${result.message || ""}`);
+  };
+  const storageChanged = async () => {
+    const nextBoot = await api.boot();
+    setBoot(nextBoot); setOutputRoot(nextBoot.defaultOutputRoot);
+    setRun(null); setCompareIds([]);
+    await refresh();
+  };
   const output = run?.outputs?.[index],
     active = ws.prompts.find((p) => p.id === selected);
   const prompts = ws.prompts.filter(
@@ -812,7 +850,7 @@ export default function App() {
                     </button>
                     <button
                       className="primary"
-                      disabled={busy || !inputsReady || !boot.apiKeyLoaded}
+                disabled={busy || maintenance || !inputsReady || !boot.apiKeyLoaded}
                       onClick={() => execute(false)}
                     >
                       {busy ? "Running…" : "Generate image"}
@@ -1303,10 +1341,11 @@ export default function App() {
                 <span className="eyebrow">OBSERVE · COMPARE · REFINE</span>
                 <h1>Experiments</h1>
                 <p className="muted">
-                  Recent 50 runs. Each preserves the prompt and parameters used.
+                  Latest 50 runs · Click a card to inspect. Older files remain on disk until you delete them.
                 </p>
               </div>
               <div className="actions">
+                <button disabled={busy || maintenance} onClick={() => setModal("storage")}>Data & storage</button>
                 <button onClick={() => act(refresh)}>Refresh</button>
                 <button onClick={() => setModal("migration")}>
                   Import old data
@@ -1348,9 +1387,7 @@ export default function App() {
                   <button
                     className="history-image"
                     onClick={() => {
-                      setRun(r);
-                      setOutputIndex(0);
-                      navigate("studio");
+                      setDetailRun(r);
                     }}
                   >
                     {r.outputs[0]?.previewUrl ? (
@@ -1377,13 +1414,12 @@ export default function App() {
                     <div className="actions">
                       <button
                         onClick={() => {
-                          setRun(r);
-                          setOutputIndex(0);
-                          navigate("studio");
+                          setDetailRun(r);
                         }}
                       >
                         Inspect
                       </button>
+                      <button className="danger" disabled={busy || maintenance} onClick={() => reviewDeletion(r)}>Delete…</button>
                       <label className="check">
                         <input
                           type="checkbox"
@@ -1415,6 +1451,9 @@ export default function App() {
             )}
           </main>
         )}
+        {detailRun && <ExperimentDetails run={detailRun} api={api} Dialog={Modal} close={() => setDetailRun(null)} reuse={reuseRun} remove={reviewDeletion} disabled={busy || maintenance} />}
+        {deletePlan && <DeleteExperiment plan={deletePlan} api={api} Dialog={Modal} close={() => setDeletePlan(null)} completed={deleted} onBusy={setMaintenance} />}
+        {modal === "storage" && <StorageDialog api={api} Dialog={Modal} close={() => setModal(null)} changed={storageChanged} onBusy={setMaintenance} disabled={busy} />}
         {modal === "settings" && (
           <Modal title="Next experiment settings" close={() => setModal(null)}>
             <fieldset disabled={busy}>

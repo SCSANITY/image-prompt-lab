@@ -21,6 +21,11 @@ developed tool, not an automatic face-swap quality evaluator.
   comparison, and two-run comparison with prompt and parameter differences.
 - **Experiment notes:** manual identity, composition, and naturalness assessments,
   favorites, and baseline markers alongside saved run evidence.
+- **Experiment detail viewer:** open a card without changing the Workspace draft;
+  inspect full-resolution outputs, save an original copy, and review timing,
+  resolution, file size, model, prompt, parameters, and estimated request cost.
+- **Data & storage:** choose a new experiment data directory, review a verified
+  migration, or delete an experiment with optional generated-image cleanup.
 
 ## Run locally
 
@@ -99,6 +104,44 @@ export does not contain cases, assessments, keys, or photos.
 
 Legacy JSON/history import is user-driven. It does not automatically copy a
 Chromium profile or migrate credentials. Inspect any import before using it.
+
+### Browse, delete, or move experiments
+
+Click a card in **Experiments** to open its detail dialog. **Save image as…**
+writes an original-resolution copy to a new filename; it never overwrites an
+existing file. **Use as next experiment** is a separate, explicit action that
+loads the old inputs and parameters into Workspace.
+
+**Delete…** first shows an estimate and two choices: delete only the record, or
+the record plus its verified generated images. Source/Target originals, prompt
+versions, and unrelated files are kept. Generated images referenced by recorded
+experiments, saved cases, or inputs selected during the current session are also
+kept. Changed or unverified outputs are not deleted. Deletion bypasses the recycle
+bin. Record-only deletion leaves images on disk and removes the record that would
+otherwise locate them; those retained images are no longer included in app totals
+or subsequent migrations. The app cannot discover references from other programs.
+
+In **Experiments → Data & storage**, choose a parent directory (for example on
+another drive). Review the proposed new subdirectory and confirm the move. The
+app copies all discoverable experiment records and verified images, including
+records beyond the gallery's latest-50 display, checks hashes, then switches its
+stored paths before cleaning up verified originals. Missing images are reported;
+modified/unverifiable images must be resolved before migrating. Custom output
+destinations are included when the records identify and verify their files.
+
+Copy or verification failure leaves the original storage active and keeps the
+partial destination for inspection. Cleanup failures and shared input files can
+leave originals behind and are reported. Keep the app open until completion. If
+the process is interrupted after the storage switch, the verified new copy is
+active but old copies may remain; cleanup is not automatically retried. An
+unavailable configured drive stops startup rather than silently creating a new,
+empty history: reconnect it before reopening the app.
+
+Only experiment records and generated images move. The small Windows profile
+(prompt library, cases, assessments, UI settings and encrypted key) stays in place;
+`experiment-storage.json` there stores the selected paths. Back up both this
+profile and the selected data directory. Migration resets the current default
+image destination; you can still choose a per-run output directory afterwards.
 
 ## Verification and local packaging
 

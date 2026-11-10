@@ -7,6 +7,8 @@ const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
 const sharp = require('sharp')
+const crypto = require('node:crypto')
+const { DEFAULT_SETTINGS } = require('../core/contract.cjs')
 
 function availablePort() {
   return new Promise((resolve, reject) => {
@@ -120,6 +122,24 @@ async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'ymi-prompt-lab-packaged-'))
   const fixturePath = path.join(profile, 'synthetic-input.png')
   await sharp({ create: { width: 64, height: 64, channels: 3, background: '#618570' } }).png().toFile(fixturePath)
+  const fixtureBytes = await fs.readFile(fixturePath)
+  const fixtureHash = crypto.createHash('sha256').update(fixtureBytes).digest('hex')
+  const generatedFiles = []
+  for (const runId of ['packaged_record_only', 'packaged_with_images']) {
+    const name = `${runId}_synthetic`
+    const record = path.join(profile, 'prompt-lab-run-records', name)
+    const images = path.join(profile, 'synthetic-outputs', name)
+    await fs.mkdir(record, { recursive: true }); await fs.mkdir(images, { recursive: true })
+    const file = path.join(images, 'output-01.png')
+    await fs.writeFile(file, fixtureBytes); generatedFiles.push(file)
+    const metadata = {
+      'request.json': { run_id: runId, created_at: '2026-01-01T00:00:00Z', experiment_name: 'Offline packaged fixture', prompt: 'Synthetic prompt', parameters: DEFAULT_SETTINGS },
+      'evidence.json': { run_id: runId, result: 'success', provider_timing_ms: 1234, outputs: [{ file: 'output-01.png', format: 'png', width: 64, height: 64, byte_count: fixtureBytes.length, sha256: fixtureHash }] },
+      'local-inputs.json': { images: [{ path: fixturePath, sha256: fixtureHash }] },
+      'local-history.json': { schema_version: 1, run_id: runId, output_directory: images },
+    }
+    for (const [filename, value] of Object.entries(metadata)) await fs.writeFile(path.join(record, filename), JSON.stringify(value))
+  }
   const screenshotPath = path.join(os.tmpdir(), 'ymi-prompt-lab-packaged-smoke.png')
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
@@ -162,6 +182,29 @@ async function main() {
     })
     assert.equal(evaluation.exceptionDetails, undefined)
     assert.deepEqual(evaluation.result.value, { imageWidth: 64, preview: true, valid: true, saved: true })
+    const storageCheck = await page.call('Runtime.evaluate', {
+      expression: `(async()=>{
+        const api=window.promptLab;
+        const initial=await api.listHistory();
+        const status=await api.storageStatus();
+        Array.from(document.querySelectorAll('nav button')).find(b=>b.textContent==='Experiments').click();
+        await new Promise(r=>setTimeout(r,200));
+        document.querySelector('.history-image').click();
+        await new Promise(r=>setTimeout(r,200));
+        const detail=Boolean(document.querySelector('.experiment-detail'))&&document.querySelector('nav [aria-current="page"]').textContent==='Experiments';
+        document.querySelector('dialog header button').click();
+        const onlyPlan=await api.planDeleteRun('packaged_record_only');
+        const only=await api.deleteRun(onlyPlan.token,false);
+        const allPlan=await api.planDeleteRun('packaged_with_images');
+        const all=await api.deleteRun(allPlan.token,true);
+        return {initial:initial.length,measured:status.runCount,detail,only:only.deleted,all:all.deleted,remaining:(await api.listHistory()).length};
+      })()`, awaitPromise: true, returnByValue: true,
+    })
+    assert.equal(storageCheck.exceptionDetails, undefined)
+    assert.deepEqual(storageCheck.result.value, { initial: 2, measured: 2, detail: true, only: true, all: true, remaining: 0 })
+    assert.deepEqual(await fs.readFile(generatedFiles[0]), fixtureBytes)
+    await assert.rejects(() => fs.access(generatedFiles[1]), { code: 'ENOENT' })
+    assert.deepEqual(await fs.readFile(fixturePath), fixtureBytes)
     const captured = await page.call('Page.captureScreenshot', { format: 'png' })
     await fs.writeFile(screenshotPath, Buffer.from(captured.data, 'base64'))
 
@@ -169,11 +212,12 @@ async function main() {
     browser = await connectCdp(version.webSocketDebuggerUrl)
     await browser.call('Browser.close').catch(() => null)
     await waitForExit(child)
-    process.stdout.write(`${JSON.stringify({ result: 'pass', executable, screenshotPath, state, offlineChecks: evaluation.result.value }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ result: 'pass', executable, screenshotPath, state, offlineChecks: evaluation.result.value, storageChecks: storageCheck.result.value }, null, 2)}\n`)
   } finally {
     page?.close()
     browser?.close()
     if (child.exitCode === null) child.kill()
+    assert.equal(path.dirname(profile), os.tmpdir())
     await fs.rm(profile, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 })
   }
 }

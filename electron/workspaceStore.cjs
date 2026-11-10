@@ -148,6 +148,7 @@ function createWorkspaceStore(root) {
         if (index < 0) state.cases.unshift(data);
         else state.cases[index] = data;
       }),
+    removeReview: (runId) => change((state) => { delete state.reviews[runId]; }),
     saveReview: ({ runId, ...value }) =>
       change((state) => {
         if (!/^[A-Za-z0-9_-]{1,160}$/.test(runId))

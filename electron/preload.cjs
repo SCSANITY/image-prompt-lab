@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('promptLab', {
   validate: (request) => ipcRenderer.invoke('prompt-lab:validate', request),
   execute: (request) => ipcRenderer.invoke('prompt-lab:execute', request),
   listHistory: () => ipcRenderer.invoke('prompt-lab:list-history'),
+  saveOutput: (runId, file) => ipcRenderer.invoke('prompt-lab:save-output', runId, file),
+  storageStatus: () => ipcRenderer.invoke('prompt-lab:storage-status'),
+  planDeleteRun: runId => ipcRenderer.invoke('prompt-lab:plan-delete-run', runId),
+  deleteRun: (token, withImages) => ipcRenderer.invoke('prompt-lab:delete-run', token, withImages),
+  pickStorage: () => ipcRenderer.invoke('prompt-lab:pick-storage'),
+  migrateStorage: token => ipcRenderer.invoke('prompt-lab:migrate-storage', token),
   viewOriginal: (runId, file) => ipcRenderer.invoke('prompt-lab:view-original', runId, file),
   onProgress: (callback) => {
     const listener = (_event, phase) => callback(phase)

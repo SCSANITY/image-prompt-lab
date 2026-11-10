@@ -28,6 +28,7 @@ const {
 } = require("./promptLabHandlers.cjs");
 const { createRunRegistry } = require("./runRegistry.cjs");
 const { createWorkspaceStore } = require("./workspaceStore.cjs");
+const { createExperimentStorage } = require("./experimentStorage.cjs");
 
 const isDev = !app.isPackaged;
 const devEntryUrl = "http://127.0.0.1:5178/";
@@ -49,6 +50,7 @@ let mainWindow = null;
 let apiKeyStore = null;
 let historyStore = null;
 let workspaceStore = null;
+let experimentStorage = null;
 const runRegistry = createRunRegistry();
 const ownsProfile = app.requestSingleInstanceLock();
 if (!ownsProfile) app.quit();
@@ -148,10 +150,22 @@ function createWindow() {
   return win;
 }
 
+function refreshHistoryStore() {
+  runRegistry.clear();
+  const roots = experimentStorage.roots();
+  historyStore = createHistoryStore({
+    evidenceRoot: roots.evidenceRoot,
+    defaultOutputRoot: roots.outputRoot,
+    previewDataUrl: createPreviewDataUrl,
+    registerRunDirectory: runRegistry.register,
+  });
+}
+
 function registerIpcHandlers() {
   ipcMain.handle("prompt-lab:view-input", async (event, input) => {
     assertTrustedEvent(event);
     const image = await inspectImage(input.path);
+    experimentStorage.protectInput(image.path);
     if (input.sha256 && image.sha256 !== input.sha256)
       throw new Error(
         "Source image changed since it was selected or recorded.",
@@ -213,7 +227,7 @@ function registerIpcHandlers() {
       JSON.parse(await fs.readFile(choice.filePaths[0], "utf8")),
     );
   });
-  ipcMain.handle("prompt-lab:import-history", async (event) => {
+  ipcMain.handle("prompt-lab:import-history", async (event) => experimentStorage.exclusive(async () => {
     assertTrustedEvent(event);
     const choice = await dialog.showOpenDialog(mainWindow, {
       title: "Select the old prompt-lab-run-records folder (read-only source)",
@@ -221,10 +235,7 @@ function registerIpcHandlers() {
     });
     if (choice.canceled) return null;
     const source = await fs.realpath(choice.filePaths[0]);
-    const targetRoot = path.join(
-      app.getPath("userData"),
-      "prompt-lab-run-records",
-    );
+    const targetRoot = experimentStorage.roots().evidenceRoot;
     await fs.mkdir(targetRoot, { recursive: true });
     let imported = 0;
     let skipped = 0;
@@ -279,7 +290,7 @@ function registerIpcHandlers() {
       imported++;
     }
     return { imported, skipped };
-  });
+  }));
   ipcMain.handle("prompt-lab:boot", async (event) => {
     assertTrustedEvent(event);
     const status = await apiKeyStatus();
@@ -287,10 +298,9 @@ function registerIpcHandlers() {
       capabilities: publicCapabilities(),
       apiKeyLoaded: status.configured && status.readable,
       apiKeyStatus: status,
-      defaultOutputRoot: path.join(
-        app.getPath("documents"),
-        "YMI Prompt Lab Images",
-      ),
+      defaultOutputRoot: experimentStorage.roots().outputRoot,
+      storageVersion: experimentStorage.roots().evidenceRoot,
+      managedStorage: experimentStorage.roots().evidenceRoot !== path.join(app.getPath("userData"), "prompt-lab-run-records"),
     };
   });
 
@@ -381,6 +391,7 @@ function registerIpcHandlers() {
       assertTrustedEvent(event);
       try {
         const image = await inspectImage(filePath, options);
+        experimentStorage.protectInput(image.path);
         return {
           ok: true,
           image: {
@@ -412,9 +423,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle(
-    "prompt-lab:execute",
-    createExecuteHandler({
+  const executeHandler = createExecuteHandler({
       prepareRequest,
       executeImageEdit,
       getApiKey: loadApiKey,
@@ -426,8 +435,7 @@ function registerIpcHandlers() {
           /* UI progress cannot change a paid request outcome. */
         }
       },
-      getEvidenceRoot: () =>
-        path.join(app.getPath("userData"), "prompt-lab-run-records"),
+      getEvidenceRoot: () => experimentStorage.roots().evidenceRoot,
       registerRunDirectory: runRegistry.register,
       recordCompletedRun: (result) => historyStore.recordCompletedRun(result),
       confirmRequest: async (event, prepared) => {
@@ -454,8 +462,62 @@ function registerIpcHandlers() {
         );
         return confirmed.response === 1;
       },
-    }),
-  );
+    });
+  ipcMain.handle("prompt-lab:execute", async (event, request) => {
+    assertTrustedEvent(event);
+    try { return await experimentStorage.exclusive(() => executeHandler(event, request)); }
+    catch (e) { return errorResult(e); }
+  });
+
+  ipcMain.handle("prompt-lab:storage-status", async (event) => {
+    assertTrustedEvent(event);
+    return experimentStorage.status();
+  });
+  ipcMain.handle("prompt-lab:plan-delete-run", async (event, runId) => {
+    assertTrustedEvent(event);
+    return experimentStorage.prepareDelete(runId);
+  });
+  ipcMain.handle("prompt-lab:delete-run", async (event, token, withImages) => {
+    assertTrustedEvent(event);
+    const result = await experimentStorage.deleteRun(token, withImages);
+    if (result.deleted) {
+      runRegistry.remove(result.runId);
+      try { await workspaceStore.removeReview(result.runId); }
+      catch { result.message = 'Experiment deleted. Its assessment note could not be cleaned up.'; }
+    }
+    return result;
+  });
+  ipcMain.handle("prompt-lab:pick-storage", async (event) => {
+    assertTrustedEvent(event);
+    const choice = await dialog.showOpenDialog(mainWindow, {
+      title: "Choose a drive or folder for experiment data",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (choice.canceled || !choice.filePaths[0]) return null;
+    return experimentStorage.prepareMigration(choice.filePaths[0]);
+  });
+  ipcMain.handle("prompt-lab:migrate-storage", async (event, token) => {
+    assertTrustedEvent(event);
+    const result = await experimentStorage.migrate(token);
+    refreshHistoryStore();
+    return result;
+  });
+  ipcMain.handle("prompt-lab:save-output", async (event, runId, file) => {
+    assertTrustedEvent(event);
+    return experimentStorage.exclusive(async () => {
+      const image = await readOriginalImage(runRegistry, runId, file);
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        title: "Save original generated image",
+        defaultPath: file,
+        filters: [{ name: "Image", extensions: [path.extname(file).slice(1)] }],
+      });
+      if (choice.canceled || !choice.filePath) return null;
+      const encoded = image.url.slice(image.url.indexOf(',') + 1);
+      // Create a new copy only; never overwrite an input or existing output.
+      await fs.writeFile(choice.filePath, Buffer.from(encoded, 'base64'), { flag: 'wx' });
+      return { saved: true };
+    });
+  });
 
   ipcMain.handle("prompt-lab:list-history", async (event) => {
     assertTrustedEvent(event);
@@ -532,29 +594,30 @@ function registerIpcHandlers() {
 }
 
 if (ownsProfile)
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     workspaceStore = createWorkspaceStore(app.getPath("userData"));
     apiKeyStore = createApiKeyStore({
       safeStorage,
       userDataPath: app.getPath("userData"),
     });
-    historyStore = createHistoryStore({
-      evidenceRoot: path.join(
-        app.getPath("userData"),
-        "prompt-lab-run-records",
-      ),
+    experimentStorage = createExperimentStorage({
+      profileRoot: app.getPath("userData"),
+      protectedInputPaths: async () => (await workspaceStore.read()).cases.flatMap(c => [...c.images.map(i => i.path), c.mask?.path].filter(Boolean)),
       defaultOutputRoot: path.join(
         app.getPath("documents"),
         "YMI Prompt Lab Images",
       ),
-      previewDataUrl: createPreviewDataUrl,
-      registerRunDirectory: runRegistry.register,
     });
+    await experimentStorage.init();
+    refreshHistoryStore();
     registerIpcHandlers();
     createWindow();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  }).catch((e) => {
+    dialog.showErrorBox("Experiment storage unavailable", e.message);
+    app.quit();
   });
 
 app.on("window-all-closed", () => {
