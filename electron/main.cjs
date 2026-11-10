@@ -437,7 +437,10 @@ function registerIpcHandlers() {
       },
       getEvidenceRoot: () => experimentStorage.roots().evidenceRoot,
       registerRunDirectory: runRegistry.register,
-      recordCompletedRun: (result) => historyStore.recordCompletedRun(result),
+      recordCompletedRun: async (result) => {
+        await experimentStorage.recordGeneratedOutputs(result);
+        return historyStore.recordCompletedRun(result);
+      },
       confirmRequest: async (event, prepared) => {
         assertTrustedEvent(event);
         const confirmed = await dialog.showMessageBox(

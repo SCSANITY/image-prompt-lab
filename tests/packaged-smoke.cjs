@@ -9,6 +9,7 @@ const path = require('node:path')
 const sharp = require('sharp')
 const crypto = require('node:crypto')
 const { DEFAULT_SETTINGS } = require('../core/contract.cjs')
+const { createExperimentStorage } = require('../electron/experimentStorage.cjs')
 
 function availablePort() {
   return new Promise((resolve, reject) => {
@@ -123,8 +124,10 @@ async function main() {
   const fixturePath = path.join(profile, 'synthetic-input.png')
   await sharp({ create: { width: 64, height: 64, channels: 3, background: '#618570' } }).png().toFile(fixturePath)
   const fixtureBytes = await fs.readFile(fixturePath)
-  const fixtureHash = crypto.createHash('sha256').update(fixtureBytes).digest('hex')
+  const fixtureHash = crypto.createHash('sha256').update(fixtureBytes).digest('hex').toUpperCase()
   const generatedFiles = []
+  const syntheticStorage = createExperimentStorage({ profileRoot: profile, defaultOutputRoot: path.join(profile, 'synthetic-outputs') })
+  await syntheticStorage.init()
   for (const runId of ['packaged_record_only', 'packaged_with_images']) {
     const name = `${runId}_synthetic`
     const record = path.join(profile, 'prompt-lab-run-records', name)
@@ -139,6 +142,7 @@ async function main() {
       'local-history.json': { schema_version: 1, run_id: runId, output_directory: images },
     }
     for (const [filename, value] of Object.entries(metadata)) await fs.writeFile(path.join(record, filename), JSON.stringify(value))
+    await syntheticStorage.recordGeneratedOutputs({ evidenceDirectory: record, outputDirectory: images, evidence: metadata['evidence.json'] })
   }
   const screenshotPath = path.join(os.tmpdir(), 'ymi-prompt-lab-packaged-smoke.png')
   const env = { ...process.env }

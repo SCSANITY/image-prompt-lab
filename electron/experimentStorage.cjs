@@ -43,10 +43,40 @@ async function unchanged(file) {
 
 function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs.copyFile, unlink = fs.unlink, protectedInputPaths = async () => [] }) {
   const configPath = path.join(profileRoot, 'experiment-storage.json')
+  const ownershipRoot = path.join(profileRoot, 'owned-experiment-outputs')
   let roots = { evidenceRoot: path.join(profileRoot, 'prompt-lab-run-records'), outputRoot: defaultOutputRoot }
   let active = false
   const plans = new Map()
   const selectedInputs = new Set()
+  const receiptPath = (runId, file) => path.join(ownershipRoot, `${digest([runId, process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file)])}.json`)
+  async function owns(runId, file) {
+    const receipt = await jsonFile(receiptPath(runId, file.path), true)
+    return !!receipt && receipt.schemaVersion === 1 && receipt.runId === runId && samePath(receipt.path || '', file.path) && receipt.hash === file.hash && receipt.bytes === file.bytes
+  }
+  async function recordOwnership(runId, files) {
+    if (!ID.test(runId)) throw error('Invalid ownership identity.')
+    await fs.mkdir(ownershipRoot, { recursive: true })
+    await regular(ownershipRoot, true)
+    for (const file of files) {
+      if (await owns(runId, file)) continue
+      await fs.writeFile(receiptPath(runId, file.path), JSON.stringify({ schemaVersion: 1, runId, path: file.path, bytes: file.bytes, hash: file.hash }), { flag: 'wx' })
+    }
+  }
+  // Main-process runner callback only; never exposed through preload or import.
+  async function recordGeneratedOutputs(result) {
+    const runId = String(result.evidence?.run_id || '')
+    const directory = path.resolve(result.evidenceDirectory || '')
+    const outputDirectory = path.resolve(result.outputDirectory || '')
+    if (!ID.test(runId) || !samePath(path.dirname(directory), roots.evidenceRoot) || !path.basename(directory).startsWith(`${runId}_`) || path.basename(outputDirectory) !== path.basename(directory)) throw error('Invalid generated output identity.')
+    const files = []
+    for (const output of [...(result.evidence.outputs || []), ...(result.evidence.partial_outputs || [])]) {
+      if (!/^(output|partial)-\d{2}\.(png|jpg|webp)$/.test(output.file || '')) throw error('Invalid generated output filename.')
+      const info = await fileInfo(path.join(outputDirectory, output.file))
+      if (info.hash !== String(output.sha256 || '').toLowerCase() || info.bytes !== output.byte_count) throw error('Generated output verification failed.')
+      files.push(info)
+    }
+    await recordOwnership(runId, files)
+  }
 
   async function init() {
     const saved = await jsonFile(configPath, true)
@@ -99,8 +129,8 @@ function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs
           const target = path.join(outputDirectory, output.file)
           if (!exists || !await optionalStat(target)) { missingImages++; continue }
           const info = await fileInfo(target)
-          if (!/^[a-f0-9]{64}$/i.test(output.sha256 || '') || info.hash !== output.sha256 || info.bytes !== output.byte_count) { blockedImages++; continue }
-          if (!images.some(v => samePath(v.path, info.path))) images.push(info)
+          if (!/^[a-f0-9]{64}$/i.test(output.sha256 || '') || info.hash !== output.sha256.toLowerCase() || info.bytes !== output.byte_count) { blockedImages++; continue }
+          if (!images.some(v => samePath(v.path, info.path))) images.push({ ...info, owned: await owns(id, info) })
         }
       } else if (imageRecords.length) blockedImages += imageRecords.length
       records.push({ runId: id, name: entry.name, title: String(request.experiment_name || 'Untitled experiment'), directory, files, images, outputDirectory, protectedPaths, missingImages, blockedImages })
@@ -119,10 +149,10 @@ function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs
     runCount: records.length,
     recordBytes: records.reduce((n, r) => n + r.files.reduce((s, f) => s + f.bytes, 0), 0),
     imageBytes: records.reduce((n, r) => n + r.images.reduce((s, f) => s + f.bytes, 0), 0),
-    reclaimableImageBytes: records.reduce((n, r) => n + r.images.filter(f => !f.protected).reduce((s, f) => s + f.bytes, 0), 0),
+    reclaimableImageBytes: records.reduce((n, r) => n + r.images.filter(f => f.owned && !f.protected).reduce((s, f) => s + f.bytes, 0), 0),
     imageCount: records.reduce((n, r) => n + r.images.length, 0),
     missingImages: records.reduce((n, r) => n + r.missingImages, 0),
-    protectedImages: records.reduce((n, r) => n + r.blockedImages + r.images.filter(f => f.protected).length, 0),
+    protectedImages: records.reduce((n, r) => n + r.blockedImages + r.images.filter(f => f.protected || !f.owned).length, 0),
   })
   async function status() {
     const state = { ...roots, profileRoot, busy: active }
@@ -189,14 +219,14 @@ function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs
     return exclusive(async () => {
       const { scan, runId } = await take(token, 'delete')
       const record = scan.records.find(r => r.runId === runId)
-      const images = withImages ? await removeFiles(record.images.filter(f => !f.protected)) : { removedBytes: 0, retained: [] }
+      const images = withImages ? await removeFiles(record.images.filter(f => f.owned && !f.protected)) : { removedBytes: 0, retained: [] }
       if (images.retained.length) return { deleted: false, removedBytes: images.removedBytes, retainedFiles: images.retained.length, message: 'Some image files could not be removed. The history record was kept; review and retry.' }
       // Remove request.json last, and restore metadata if any removal fails.
       const files = [...record.files].sort((a, b) => Number(path.basename(a.path) === 'request.json') - Number(path.basename(b.path) === 'request.json'))
       const metadata = await removeMetadata(files)
       await fs.rmdir(record.directory).catch(() => {})
-      if (withImages) await fs.rmdir(record.outputDirectory).catch(() => {})
-      return { deleted: metadata.retained.length === 0, runId, removedBytes: images.removedBytes + metadata.removedBytes, retainedFiles: metadata.retained.length, message: metadata.message, protectedImages: record.blockedImages + record.images.filter(f => f.protected).length }
+      if (images.removedBytes) await fs.rmdir(record.outputDirectory).catch(() => {})
+      return { deleted: metadata.retained.length === 0, runId, removedBytes: images.removedBytes + metadata.removedBytes, retainedFiles: metadata.retained.length, message: metadata.message, protectedImages: record.blockedImages + record.images.filter(f => f.protected || !f.owned).length }
     })
   }
   async function prepareMigration(parent) {
@@ -234,6 +264,9 @@ function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs
           await fs.writeFile(newLocator, JSON.stringify({ schema_version: 1, run_id: record.runId, output_directory: newImages }), { flag: 'wx' })
           const oldLocator = record.files.find(f => path.basename(f.path) === 'local-history.json')
           if (oldLocator) copies.set(oldLocator.path, await fileInfo(newLocator))
+          // These are newly created, verified copies, not ownership adoption
+          // of the imported/legacy paths. Import cannot write these receipts.
+          await recordOwnership(record.runId, record.images.map(f => copies.get(f.path)))
         }
         if ((await inventory()).fingerprint !== plan.scan.fingerprint) throw error('Original files changed during migration.')
         for (const copy of copies.values()) if (!await unchanged(copy)) throw error('A destination file changed during migration.')
@@ -250,16 +283,16 @@ function createExperimentStorage({ profileRoot, defaultOutputRoot, copyFile = fs
       let removedBytes = 0
       let retainedFiles = 0
       for (const record of plan.scan.records) {
-        const result = await removeFiles([...record.images.filter(f => !f.protected), ...record.files], copies)
+        const result = await removeFiles([...record.images.filter(f => f.owned && !f.protected), ...record.files], copies)
         removedBytes += result.removedBytes
-        retainedFiles += result.retained.length + record.images.filter(f => f.protected).length
+        retainedFiles += result.retained.length + record.images.filter(f => f.protected || !f.owned).length
         await fs.rmdir(record.directory).catch(() => {})
-        await fs.rmdir(record.outputDirectory).catch(() => {})
+        if (record.images.some(f => f.owned && !f.protected)) await fs.rmdir(record.outputDirectory).catch(() => {})
       }
       return { ...next, removedBytes, retainedFiles, missingImages: plan.scan.records.reduce((n, r) => n + r.missingImages, 0) }
     })
   }
-  return { init, exclusive, status, prepareDelete, deleteRun, prepareMigration, migrate, protectInput: p => { if (path.isAbsolute(p || '')) selectedInputs.add(path.resolve(p)) }, roots: () => ({ ...roots }) }
+  return { init, exclusive, status, prepareDelete, deleteRun, prepareMigration, migrate, recordGeneratedOutputs, protectInput: p => { if (path.isAbsolute(p || '')) selectedInputs.add(path.resolve(p)) }, roots: () => ({ ...roots }) }
 }
 
 module.exports = { createExperimentStorage }

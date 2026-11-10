@@ -21,7 +21,7 @@ export function DeleteExperiment({ plan, api, Dialog, close, completed, onBusy }
     </fieldset>
     <div className="storage-total"><span>Estimated space released</span><strong>{bytes(plan.recordBytes + (withImages ? plan.reclaimableImageBytes : 0))}</strong></div>
     <p className="muted">Source / Target originals and saved Prompt library versions are never deleted. This action does not use a recycle bin.</p>
-    {!!plan.protectedImages && <p>{plan.protectedImages} shared, changed or unverified image(s) will be kept.</p>}
+    {!!plan.protectedImages && <p>{plan.protectedImages} shared, changed, externally referenced or unverified image(s) will be kept.</p>}
     {!!plan.missingImages && <p>{plan.missingImages} image(s) are already missing.</p>}
     {error && <p className="notice error" role="alert">{error}</p>}
     <div className="actions"><button disabled={pending} onClick={close}>Cancel</button><button className="danger" disabled={pending || !!error} onClick={remove}>{pending ? 'Deleting…' : 'Delete selected data'}</button></div>
@@ -69,9 +69,9 @@ export default function StorageDialog({ api, Dialog, close, changed, onBusy, dis
       <p>{plan.runCount} experiments · {plan.imageCount} images · {bytes(plan.recordBytes + plan.imageBytes)} to copy.</p>
       <ol><li>Copy files to a new, separate data folder.</li><li>Verify every copied file before switching storage.</li><li>Remove only verified originals. Keep source / target inputs.</li></ol>
       {!!plan.missingImages && <p>{plan.missingImages} missing image(s) cannot be recovered; their records will be preserved.</p>}
-      {!!plan.protectedImages && <p>{plan.protectedImages} shared input image(s) will also remain at their original paths.</p>}
+      {!!plan.protectedImages && <p>{plan.protectedImages} shared or externally referenced image(s) will also remain at their original paths.</p>}
       <div className="actions"><button disabled={pending} onClick={() => setPlan(null)}>Cancel move</button><button className="primary" disabled={pending || disabled} onClick={migrate}>{pending ? 'Copying & verifying…' : 'Move verified data'}</button></div>
-      <p className="muted">Keep the app open until the operation finishes. A failed copy does not remove originals.</p>
+      <p className="muted">Keep the app open until the operation finishes. A failed copy does not remove originals. After moving, use this updated build; older builds cannot read the new storage location.</p>
     </section>}
     {notice && <p role="status">{notice}</p>}
     {error && <p className="notice error" role="alert">{error}</p>}
