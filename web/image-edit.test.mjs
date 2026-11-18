@@ -48,6 +48,19 @@ test('rejects wrong files and fails before any provider request for invalid sett
     () => assert.fail('unexpected provider call')), /divisible by 16/)
 })
 
+test('2048 and custom output dimensions reach OpenAI unchanged', async () => {
+  for (const size of ['2048x2048', '2048x1536', '1536x2048', '1536x864']) {
+    let calls = 0
+    const result = await generateImage({ ...input, settings: { ...input.settings, size } }, async (_url, request) => {
+      calls++
+      assert.equal(request.body.get('size'), size)
+      return Response.json({ data: [{ b64_json: png }] })
+    })
+    assert.equal(calls, 1)
+    assert.equal(result.size.value, size)
+  }
+})
+
 test('does not resend on connection loss, failed response body, or quota error', async () => {
   const failures = [
     [() => { throw new Error('interrupted') }, /outcome is unknown/],

@@ -7,6 +7,7 @@ import {
   QUALITY_VALUES,
 } from '../core/contract.mjs'
 import InputSlots from '../src/InputSlots.jsx'
+import SizeSelect from './SizeSelect.jsx'
 import { generateImage, prepareImageFile } from './image-edit.mjs'
 import './styles.css'
 
@@ -173,15 +174,10 @@ function App() {
                   )}
                 </select>
               </label>
-              <label>Size
-                <input list="sizes" {...setting('size')} required />
-                <datalist id="sizes">
-                  <option value="1024x1024" />
-                  <option value="1536x1024" />
-                  <option value="1024x1536" />
-                  <option value="auto" />
-                </datalist>
-              </label>
+              <SizeSelect
+                value={settings.size}
+                onChange={size => setSettings(previous => ({ ...previous, size }))}
+              />
               <label>Quality
                 <select {...setting('quality')}>
                   {QUALITY_VALUES.map(quality => <option key={quality}>{quality}</option>)}
