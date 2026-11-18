@@ -9,6 +9,10 @@
   "scripts": {
     "dev": "concurrently -k \"vite --configLoader native\" \"wait-on tcp:5178 && electron .\"",
     "build": "vite build --configLoader native",
+    "dev:web": "vite --config vite.config.web.mjs --configLoader native",
+    "build:web": "vite build --config vite.config.web.mjs --configLoader native",
+    "preview:web": "vite preview --config vite.config.web.mjs --configLoader native",
+    "test:web": "node --test web/image-edit.test.mjs",
     "test": "node --require ./tests/network-guard.cjs --test tests/*.test.cjs",
     "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-visual-smoke.ps1",
     "dist": "npm run build && electron-builder --config electron-builder.yml --win portable",

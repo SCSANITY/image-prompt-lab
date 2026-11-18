@@ -29,6 +29,27 @@ developed tool, not an automatic face-swap quality evaluator.
 
 ## Run locally
 
+### Browser edition
+
+The browser edition edits one image at a time. Choose the story artwork and face
+reference, enter a prompt and your own OpenAI API key, and download the original
+output file. Work stays in the open page; download the result before closing it.
+The key and images go directly to OpenAI when you generate. Use a key approved
+for browser use rather than a shared application key.
+
+```powershell
+npm ci
+npm run dev:web
+```
+
+Open `http://127.0.0.1:5180/image-prompt-lab/`. To verify the production build,
+run `npm run test:web`, `npm run build:web`, then `npm run preview:web` and open
+`http://127.0.0.1:4180/image-prompt-lab/`. The GitHub Pages artifact is the
+contents of `dist-web/`, built for `/image-prompt-lab/`. No API key is needed
+to build or test it.
+
+### Desktop edition
+
 This repository publishes **source only**. No prebuilt executable, customer image,
 private prompt collection, or generated result is included.
 
