@@ -41,6 +41,7 @@ function App() {
   const setters = [setSource, setTarget]
   const [settings, setSettings] = useState({
     ...DEFAULT_SETTINGS,
+    model: MODELS.find(model => model.pinned && model.family === 'sunburst').id,
     size: '2048x2048',
   })
   const [prompt, setPrompt] = useState('')
