@@ -39,7 +39,10 @@ function App() {
   const [result, setResult] = useImageAsset()
   const images = [source, target]
   const setters = [setSource, setTarget]
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [settings, setSettings] = useState({
+    ...DEFAULT_SETTINGS,
+    size: '2048x2048',
+  })
   const [prompt, setPrompt] = useState('')
   const [reading, setReading] = useState(false)
   const [generating, setGenerating] = useState(false)
